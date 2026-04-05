@@ -1,0 +1,22 @@
+{
+  "name": "bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.0",
+    "exceljs": "^4.4.0",
+    "google-auth-library": "^10.6.2",
+    "google-spreadsheet": "^5.2.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^6.0.1",
+    "telegraf": "^4.16.3"
+  }
+}
