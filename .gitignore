@@ -7,6 +7,7 @@ database.sqlite
 # Секретные заметки и файлы
 notes.md
 report.xlsx
+bot_activity.log
 
 # Файл с ключами (создадим на следующем шаге)
 .env
