@@ -1,0 +1,3 @@
+BOT_TOKEN=your_telegram_bot_token
+ADMIN_ID=your_telegram_id
+YANDEX_SECRET_ACCESS_KEY=your_yandex_oauth_token
