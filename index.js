@@ -22,7 +22,11 @@ const logger = winston.createLogger({
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const YANDEX_TOKEN = process.env.YANDEX_SECRET_ACCESS_KEY;
-const ADMIN_ID = process.env.ADMIN_ID;
+
+const ADMIN_IDS = process.env.ADMIN_ID
+   ? process.env.ADMIN_ID.split(',').map(id => Number(id.trim()))
+   : [];
+
 const FILE_PATH = './leads_report.xlsx';
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -76,18 +80,18 @@ async function uploadToYandexDisk(db) {
 async function initDatabase() {
    const db = await open({ filename: './database.sqlite', driver: sqlite3.Database });
    await db.exec(`
-        CREATE TABLE IF NOT EXISTS leads (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tg_id INTEGER UNIQUE,
-            username TEXT,
-            name TEXT,
-            phone TEXT,
-            email TEXT,
-            agreed_at TEXT, 
-            source TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    `);
+          CREATE TABLE IF NOT EXISTS leads (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tg_id INTEGER UNIQUE,
+              username TEXT,
+              name TEXT,
+              phone TEXT,
+              email TEXT,
+              agreed_at TEXT, 
+              source TEXT,
+              created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )
+      `);
    return db;
 }
 
@@ -95,17 +99,13 @@ async function startApp() {
    const db = await initDatabase();
    logger.info('🚀 Бот запущен');
 
-   // --- ОБРАБОТКА /START ---
    bot.start(async (ctx) => {
       const userId = ctx.from.id;
-
-      // Инициализируем стейдж
       if (!userStages[userId]) {
          userStages[userId] = { step: 'IDLE', isAdminMode: true };
       }
 
-      // ПРОВЕРКА НА АДМИНА
-      if (userId.toString() === ADMIN_ID && userStages[userId].isAdminMode) {
+      if (ADMIN_IDS.includes(userId) && userStages[userId].isAdminMode) {
          return ctx.reply(`Здорова, босс! 😎 Чё какие дела?`,
             Markup.inlineKeyboard([
                [Markup.button.callback('📊 ВЫГРУЗИТЬ БАЗУ', 'ADMIN_EXPORT')],
@@ -115,7 +115,6 @@ async function startApp() {
          );
       }
 
-      // ОБЫЧНАЯ ЛОГИКА ЮЗЕРА
       const existingUser = await db.get('SELECT * FROM leads WHERE tg_id = ?', [userId]);
       if (existingUser && existingUser.email) {
          await ctx.reply(`Рад снова видеть тебя, ${existingUser.name}! 😊 Лови гайд еще раз:`);
@@ -125,7 +124,6 @@ async function startApp() {
          return;
       }
 
-      // Сохраняем лида
       await db.run(
          'INSERT INTO leads (tg_id, username, source) VALUES (?, ?, ?) ON CONFLICT(tg_id) DO UPDATE SET source = excluded.source',
          [userId, ctx.from.username, ctx.payload || 'direct']
@@ -138,9 +136,8 @@ async function startApp() {
       );
    });
 
-   // --- АДМИНСКИЕ ДЕЙСТВИЯ ---
    bot.action('ADMIN_EXPORT', async (ctx) => {
-      if (ctx.from.id.toString() !== ADMIN_ID) return;
+      if (!ADMIN_IDS.includes(ctx.from.id)) return;
       await ctx.answerCbQuery('Генерирую Excel...');
       try {
          const file = await generateExcel(db);
@@ -151,64 +148,73 @@ async function startApp() {
    });
 
    bot.action('USER_MODE', async (ctx) => {
-      if (ctx.from.id.toString() !== ADMIN_ID) return;
+      if (!ADMIN_IDS.includes(ctx.from.id)) return;
       userStages[ctx.from.id].isAdminMode = false;
       await ctx.answerCbQuery();
       await ctx.reply('Окей, теперь ты как обычный юзер. Нажми /start чтобы пройти опрос.');
    });
 
-   // --- РАССЫЛКА ---
    bot.action('ADMIN_BROADCAST_START', async (ctx) => {
-      if (ctx.from.id.toString() !== ADMIN_ID) return;
+      if (!ADMIN_IDS.includes(ctx.from.id)) return;
       userStages[ctx.from.id].step = 'BC_WAIT_MSG';
       await ctx.answerCbQuery();
       await ctx.reply('Пришлите сообщение для рассылки (текст, фото или видео с описанием):');
    });
 
-   // Хендлер для контента рассылки и опроса
    bot.on(['text', 'photo', 'video'], async (ctx, next) => {
       const userId = ctx.from.id;
       const stage = userStages[userId];
-
       if (!stage) return next();
 
-      // 1. Ожидание контента поста
       if (stage.step === 'BC_WAIT_MSG') {
          stage.broadcastMsg = ctx.message;
          stage.step = 'BC_WAIT_URL';
          return ctx.reply('Нужна кнопка-ссылка? Пришлите URL (например, https://google.com) или напишите /skip');
       }
 
-      // 2. Ожидание ссылки
+      // --- ИЗМЕНЕНО: Защита от кривых ссылок и краша ---
       if (stage.step === 'BC_WAIT_URL') {
          if (ctx.message?.text && ctx.message.text !== '/skip') {
-            stage.broadcastUrl = ctx.message.text;
+            const url = ctx.message.text;
+            // Валидация протокола
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+               return ctx.reply('❌ Ошибка: Ссылка должна начинаться с http:// или https://\nПопробуйте еще раз или напишите /skip');
+            }
+            stage.broadcastUrl = url;
          }
+
          stage.step = 'BC_CONFIRM';
 
-         await ctx.reply('📢 ПРЕВЬЮ ПОСТА:');
-         const extra = stage.broadcastUrl ? Markup.inlineKeyboard([[Markup.button.url('Узнать больше', stage.broadcastUrl)]]) : {};
-         await ctx.telegram.copyMessage(userId, userId, stage.broadcastMsg.message_id, extra);
+         try {
+            await ctx.reply('📢 ПРЕВЬЮ ПОСТА:');
+            const extra = stage.broadcastUrl
+               ? Markup.inlineKeyboard([[Markup.button.url('Узнать больше', stage.broadcastUrl)]])
+               : {};
 
-         return ctx.reply('Все верно? Запускаем?', Markup.inlineKeyboard([
-            [Markup.button.callback('🚀 ДА, ЗАПУСКАЙ!', 'BC_SEND')],
-            [Markup.button.callback('❌ ОТМЕНА', 'BC_CANCEL')]
-         ]));
+            await ctx.telegram.copyMessage(userId, userId, stage.broadcastMsg.message_id, extra);
+
+            return ctx.reply('Все верно? Запускаем?', Markup.inlineKeyboard([
+               [Markup.button.callback('🚀 ДА, ЗАПУСКАЙ!', 'BC_SEND')],
+               [Markup.button.callback('❌ ОТМЕНА', 'BC_CANCEL')]
+            ]));
+         } catch (e) {
+            logger.error(`Ошибка превью рассылки: ${e.message}`);
+            stage.step = 'BC_WAIT_URL'; // Возвращаем на ввод ссылки
+            stage.broadcastUrl = null;
+            return ctx.reply('⚠ Telegram не принял эту ссылку. Возможно, она содержит недопустимые символы. Попробуйте прислать другую ссылку или напишите /skip:');
+         }
       }
 
-      // Защита от мусора во время опроса
       if (stage.step !== 'IDLE' && !ctx.message.text) {
          return ctx.reply(`Хмм, ${stage.name || 'друг'}, я понимаю только текст. Пожалуйста, напиши ответ словами.`);
       }
-
       return next();
    });
 
    bot.action('BC_SEND', async (ctx) => {
-      if (ctx.from.id.toString() !== ADMIN_ID) return;
+      if (!ADMIN_IDS.includes(ctx.from.id)) return;
       const stage = userStages[ctx.from.id];
       const users = await db.all('SELECT tg_id FROM leads');
-
       await ctx.editMessageText(`🚀 Рассылка пошла (${users.length} чел.)...`);
 
       let success = 0;
@@ -224,7 +230,6 @@ async function startApp() {
             failed++;
          }
       }
-
       stage.step = 'IDLE';
       stage.broadcastUrl = null;
       await ctx.reply(`✅ Рассылка завершена!\n\nДоставлено: ${success}\nОшибок: ${failed}`);
@@ -236,7 +241,6 @@ async function startApp() {
       await ctx.reply('Действие отменено.');
    });
 
-   // --- ЛОГИКА ОПРОСА ЮЗЕРА ---
    bot.action('START_QUIZ', async (ctx) => {
       await ctx.answerCbQuery();
       await ctx.editMessageText(

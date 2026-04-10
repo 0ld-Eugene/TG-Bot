@@ -8,6 +8,7 @@ database.sqlite
 notes.md
 report.xlsx
 bot_activity.log
+leads_report.xlsx
 
 # Файл с ключами (создадим на следующем шаге)
 .env
